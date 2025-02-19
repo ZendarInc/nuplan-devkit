@@ -21,7 +21,7 @@ from bokeh.events import PointEvent
 from bokeh.io.export import get_screenshot_as_png
 from bokeh.layouts import column, gridplot, row
 from bokeh.models import Button, ColumnDataSource, Slider, Title
-from bokeh.plotting.figure import Figure
+from bokeh.plotting import figure
 from bokeh.server.callbacks import PeriodicCallback
 from bokeh.util.callback_manager import EventCallback
 from selenium import webdriver
