@@ -91,6 +91,22 @@ def get_db_description(log_file: str) -> DbDescription:
 
     return DbDescription(tables=tables)
 
+def get_db_categories(log_file: str) -> Generator[Tuple[str, int], None, None]:
+    """
+    Get the categories of the database.
+    :param log_file: The log file to query.
+    :return: A generator of (category, count) tuples, ordered by count desc.
+    """
+    query = """
+    SELECT  name,
+            COUNT(*) AS cnt
+    FROM category
+    GROUP BY name
+    ORDER BY cnt DESC;
+    """
+
+    for row in execute_many(query, (), log_file):
+        yield (row["name"], row["cnt"])
 
 def get_db_duration_in_us(log_file: str) -> int:
     """
@@ -162,3 +178,32 @@ def get_db_scenario_info(log_file: str) -> Generator[Tuple[str, int], None, None
 
     for row in execute_many(query, (), log_file):
         yield (row["type"], row["cnt"])
+
+def get_unique_frame_count(log_file: str) -> int:
+    """
+    Get the number of unique frames in the database.
+    :param log_file: The log file to query.
+    :return: The number of unique frames in the database.
+    """
+    query = """
+    SELECT COUNT(DISTINCT lidar_pc_token) AS unique_frame_count
+    FROM scenario_tag;
+    """
+    result = execute_one(query, (), log_file)
+    return int(result["unique_frame_count"])
+
+def get_unique_frames_by_scenario_type(log_file: str) -> Generator[Tuple[str, int], None, None]:
+    """
+    Get the number of unique frames for each scenario type.
+    :param log_file: The log file to query.
+    :return: A generator of (scenario_type, unique_frame_count) tuples, ordered by scenario_type.
+    """
+    query = """
+    SELECT type,
+           COUNT(DISTINCT lidar_pc_token) AS unique_frame_count
+    FROM scenario_tag
+    GROUP BY type
+    ORDER BY unique_frame_count DESC;
+    """
+    for row in execute_many(query, (), log_file):
+        yield (row["type"], row["unique_frame_count"])

@@ -1,9 +1,15 @@
+import glob
 import os
 import time
-
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import typer
-
+from collections import defaultdict
+import multiprocessing
+from tqdm import tqdm
+from pathlib import Path
 from nuplan.database.nuplan_db.db_cli_queries import (
+    get_db_categories,
     get_db_description,
     get_db_duration_in_us,
     get_db_log_duration,
@@ -15,7 +21,7 @@ from nuplan.planning.scenario_builder.nuplan_db.nuplan_scenario_utils import dow
 cli = typer.Typer()
 
 NUPLAN_DATA_ROOT = os.getenv('NUPLAN_DATA_ROOT', "/data/sets/nuplan/")
-NUPLAN_DB_VERSION = f'{NUPLAN_DATA_ROOT}/nuplan-v1.1/splits/mini/2021.07.16.20.45.29_veh-35_01095_01486.db'
+NUPLAN_DB_VERSION = f'{NUPLAN_DATA_ROOT}/nuplan-v1.1'
 
 
 def _ensure_file_downloaded(data_root: str, potentially_remote_path: str) -> str:
@@ -63,6 +69,140 @@ def info(
             )
 
         typer.echo()
+
+
+@cli.command()
+def categories(
+    db_version: str = typer.Argument(NUPLAN_DB_VERSION, help="The database version."),
+    data_root: str = typer.Option(NUPLAN_DATA_ROOT, help="The root location of the database"),
+    workers: int = typer.Option(0, help="Number of worker threads. 0 for auto-detection."),
+) -> None:
+    """
+    Print out the categories of the selected db.
+    """
+    db_version = _ensure_file_downloaded(data_root, db_version)
+    
+    # Either process a single file or find all DB files if db_version is a directory
+    if os.path.isdir(db_version):
+        # Use os.walk for more efficient directory traversal
+        db_files = []
+        for root, _, files in os.walk(db_version):
+            for file in files:
+                if file.endswith('.db'):
+                    db_files.append(os.path.join(root, file))
+    else:
+        db_files = [db_version]
+    
+    if not db_files:
+        typer.echo("No database files found.")
+        return
+
+    # Auto-determine number of workers if not specified
+    if workers <= 0:
+        workers = min(multiprocessing.cpu_count() + 4, len(db_files))  # CPU count + 4 for I/O bound tasks
+    
+    total_files = len(db_files)
+    typer.echo(f"Processing {total_files} database files using {workers} workers...")
+    
+    categories = defaultdict(int)
+    
+    # Function to process a database file and handle errors
+    def process_db_file(db_file):
+        try:
+            return db_file, get_db_categories(db_file)
+        except Exception as e:
+            return db_file, e
+    
+    # Use ThreadPoolExecutor instead of ProcessPoolExecutor for I/O bound operations
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Submit all tasks
+        futures = [executor.submit(process_db_file, db_file) for db_file in db_files]
+        
+        # Process results as they complete with proper progress updates
+        error_count = 0
+        for future in tqdm(futures, total=len(futures), desc="Processing databases"):
+            db_file, result = future.result()
+            if isinstance(result, Exception):
+                typer.echo(f"Error processing database {os.path.basename(db_file)}: {result}", err=True)
+                error_count += 1
+            else:
+                for category, count in result:
+                    categories[category] += count
+    
+    if error_count > 0:
+        typer.echo(f"\nEncountered errors in {error_count} of {total_files} files.")
+    
+    typer.echo("\nCategory counts:")
+    for category, count in sorted(categories.items(), key=lambda x: x[1], reverse=True):
+        typer.echo(f"{category}: {count}")
+
+@cli.command()
+def all_scenarios(
+    db_version: str = typer.Argument(NUPLAN_DB_VERSION, help="The database version."),
+    data_root: str = typer.Option(NUPLAN_DATA_ROOT, help="The root location of the database"),
+    split: str = typer.Option("mini", help="The split to query."),
+    workers: int = typer.Option(0, help="Number of worker threads. 0 for auto-detection."),
+) -> None:
+    """
+    Print out the scenario types of the selected db.
+    """
+    db_version = _ensure_file_downloaded(data_root, db_version)
+    
+    # Either process a single file or find all DB files if db_version is a directory
+    if os.path.isdir(db_version):
+        # Use os.walk for more efficient directory traversal
+        db_files = []
+        for root, _, files in os.walk(db_version):
+            if Path(root).name == split:
+                for file in files:
+                    if file.endswith('.db'):
+                        db_files.append(os.path.join(root, file))
+                        print(f"Found {file}")
+    else:
+        db_files = [db_version]
+    
+    if not db_files:
+        typer.echo("No database files found.")
+        return
+
+    # Auto-determine number of workers if not specified
+    if workers <= 0:
+        workers = min(multiprocessing.cpu_count() + 4, len(db_files))  # CPU count + 4 for I/O bound tasks
+    
+    total_files = len(db_files)
+    typer.echo(f"Processing {total_files} database files using {workers} workers...")
+    
+    scenario_types = defaultdict(int)
+    
+    # Function to process a database file and handle errors
+    def process_db_file(db_file):
+        try:
+            return db_file, get_db_scenario_info(db_file)
+        except Exception as e:
+            return db_file, e
+    
+    # Use ThreadPoolExecutor instead of ProcessPoolExecutor for I/O bound operations
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        # Submit all tasks
+        futures = [executor.submit(process_db_file, db_file) for db_file in db_files]
+        
+        # Process results as they complete with proper progress updates
+        error_count = 0
+        for future in tqdm(futures, total=len(futures), desc="Processing databases"):
+            db_file, result = future.result()
+            if isinstance(result, Exception):
+                typer.echo(f"Error processing database {os.path.basename(db_file)}: {result}", err=True)
+                error_count += 1
+            else:
+                for scenario_type, count in result:
+                    scenario_types[scenario_type] = scenario_types.get(scenario_type, 0) + count
+    
+    if error_count > 0:
+        typer.echo(f"\nEncountered errors in {error_count} of {total_files} files.")
+    
+    typer.echo("\nScenario type counts:")
+    for scenario_type, count in sorted(scenario_types.items(), key=lambda x: x[1], reverse=True):
+        typer.echo(f"{scenario_type}: {count}")
 
 
 @cli.command()
